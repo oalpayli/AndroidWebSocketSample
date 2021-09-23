@@ -3,12 +3,14 @@ package com.ceng.ozi.websocketchannelsample
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.ceng.ozi.websocketchannelsample.repository.MainRepository
+import com.ceng.ozi.websocketchannelsample.socket.SocketEvent
 import com.squareup.moshi.JsonAdapter
 import dagger.hilt.android.lifecycle.HiltViewModel
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.channels.consumeEach
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.launchIn
+import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -16,35 +18,42 @@ import javax.inject.Inject
 @ExperimentalCoroutinesApi
 @HiltViewModel
 class MainViewModel @Inject constructor(
-    @CryptoAdapter private val cryptoJsonAdapter: JsonAdapter<Crypto>
+    @CryptoAdapter private val cryptoJsonAdapter: JsonAdapter<Crypto>,
+    private val repository: MainRepository
 ) : ViewModel() {
 
-    private val liveSocketProvider = LiveSocketProvider(viewModelScope)
-
-    private val repository = MainRepository(liveSocketProvider)
-
     val updatedData = MutableStateFlow<Crypto?>(null)
+    private val subscribeList = listOf("5~CCCAGG~BTC~USD")
 
-    fun startGettingUpdate() {
-        viewModelScope.launch(Dispatchers.IO) {
-            repository.startSocket().consumeEach {
-                it.exception?.let { throwable ->
-                    Log.d("ozi", throwable.localizedMessage ?: "exception is null")
-                } ?: consumeUpdate(it)
-            }
+    init {
+        viewModelScope.launch {
+            repository.subscribeTo(subscribeList)
         }
     }
 
-    private fun consumeUpdate(socketUpdate: SocketUpdate) {
-        socketUpdate.text?.let { updatedValue ->
-            updatedData.update {
-                cryptoJsonAdapter.fromJson(updatedValue)
+    fun startGettingUpdate() {
+        repository.message()
+            .onEach {
+                if (it is SocketEvent.OnMessageReceived) {
+                    consumeUpdate(it.message)
+                } else if (it is SocketEvent.OnFailureReceived) {
+                    Log.d(
+                        this@MainViewModel.javaClass.simpleName,
+                        it.throwable.localizedMessage ?: ""
+                    )
+                }
             }
+            .launchIn(viewModelScope)
+    }
+
+    private fun consumeUpdate(message: String) {
+        updatedData.update {
+            cryptoJsonAdapter.fromJson(message)
         }
     }
 
     override fun onCleared() {
-        repository.closeSocket()
+        repository.unsubscribeFrom(subscribeList)
         super.onCleared()
     }
 }
